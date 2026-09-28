@@ -1,3 +1,4 @@
+#include "ChannelCenter.h"
 #include "RtlJaguarDevice.h"
 #include "BeamformingSounder.h"
 #include "ChannelFreq.h"
@@ -1097,6 +1098,11 @@ size_t RtlJaguarDevice::build_tx_block(const uint8_t *packet, size_t length,
                 (int)_channel.ChannelWidth, (int)bwidth, (int)BWSettingOfDesc);
 
   SET_TX_DESC_DATA_BW_8812(usb_frame, BWSettingOfDesc);
+  /* A 20 MHz frame in a 40 MHz channel goes on the primary sub-channel (ChannelCenter.h tx_data_sc); before,
+   * DATA_SC stayed 0 and the sub-channel was left to the hardware. */
+  SET_TX_DESC_DATA_SC_8812(usb_frame, devourer::tx_data_sc(_channel.ChannelWidth,
+                                                           static_cast<ChannelWidth_t>(bwidth),
+                                                           _channel.ChannelOffset));
 
   /* The SET_TX_DESC_*_8812 macros have bit-identical positions to the
    * SET_TX_DESC_*_8814A macros (verified against hal/rtl8814a_xmit.h). But
