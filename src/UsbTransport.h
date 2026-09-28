@@ -35,7 +35,8 @@ public:
                libusb_context *ctx = nullptr,
                std::shared_ptr<devourer::UsbDeviceLock> usb_lock = nullptr,
                bool rx_zerocopy = true, RxMode rx_mode = RxMode::Async,
-               int pool_spare = 0, int ring_ms = 0);
+               int pool_spare = 0, int ring_ms = 0,
+               RxRingCallback on_ring = nullptr);
   ~UsbTransport() override;
 
   bool is_usb() const override { return true; }
@@ -143,6 +144,7 @@ private:
   RxMode _rx_mode = RxMode::Async;
   int _pool_spare = 0;
   int _ring_ms = 0;
+  RxRingCallback _on_ring; /* ring telemetry consumer; called per ring_ms window */
 
   /* rx_loop helpers for the servicing strategies dispatched off _rx_mode. */
   void rx_loop_sync(int buf_size,

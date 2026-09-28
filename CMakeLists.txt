@@ -772,6 +772,14 @@ target_include_directories(ChannelCenterSelftest PRIVATE
 
 add_test(NAME channel_center COMMAND ChannelCenterSelftest)
 
+# Headless guard for the async RX ring telemetry counters (src/RxRingStats.h): completion / re-arm / failed
+# resubmit / consume accounting and the snapshot the rx.ring event and DeviceConfig::Rx::on_ring receive.
+add_executable(RxRingCountersSelftest tests/rx_ring_counters_selftest.cpp)
+target_include_directories(RxRingCountersSelftest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+add_test(NAME rx_ring_counters COMMAND RxRingCountersSelftest)
+
 # Headless round-trip guard for the 802.11ax HE TX radiotap path
 # (src/RadiotapBuilder.cpp build_he + the shared Radiotap.c field-23 size entry
 # + src/ieee80211_radiotap.h HE masks): parse an HE spec -> build -> iterate ->

@@ -14,25 +14,13 @@
 #include <vector>
 
 #include "Event.h"
+#include "RxRingStats.h"
 #include "UsbDeviceLock.h"
 #include "UsbOpen.h"
 
 namespace devourer {
 
 namespace {
-/* Saturating atomic min/max for the RX-ring telemetry — relaxed and
- * best-effort (a rare lost update is acceptable for a diagnostic counter). */
-inline void atomic_min(std::atomic<int> &m, int v) {
-  int cur = m.load(std::memory_order_relaxed);
-  while (v < cur && !m.compare_exchange_weak(cur, v, std::memory_order_relaxed))
-    ;
-}
-inline void atomic_max(std::atomic<long long> &m, long long v) {
-  long long cur = m.load(std::memory_order_relaxed);
-  while (v > cur && !m.compare_exchange_weak(cur, v, std::memory_order_relaxed))
-    ;
-}
-
 /* Shared state for the async RX URB queue. */
 struct AsyncRxShared {
   const std::function<void(const uint8_t *, int)> *cb;
@@ -43,28 +31,16 @@ struct AsyncRxShared {
   std::atomic<int> active{0};
 
   /* Diagnostic telemetry, populated only when `telemetry` (DEVOURER_RX_RING_MS
-   * > 0) — the default path pays nothing. `armed` is the count of URBs
-   * currently posted to the host controller and awaiting a frame: THIS is the
-   * depth that collapses when a slow inline consumer delays resubmit, and it is
-   * distinct from `active` (which counts URBs not yet permanently retired and
-   * so sits at ~n_urbs regardless of starvation). `min_armed` is the low-water
-   * mark since the last rx.ring emit; `cb_max_us` the worst inline-consume
-   * latency in the window; `resubmit_fail` cumulative wanted-but-failed
-   * resubmits. */
+   * > 0) — the default path pays nothing. The counters and their meaning are
+   * in RxRingStats.h (RxRingCounters): the armed-URB depth that collapses when
+   * a slow inline consumer delays resubmit (distinct from `active`, which
+   * counts URBs not yet permanently retired and so sits at ~n_urbs regardless
+   * of starvation), its low-water mark, the worst inline consume, and the
+   * cumulative completions / empties / failed resubmits. empties is counted in
+   * the callback, so it survives the pump-thread starvation that makes the
+   * periodic rx.ring emit sparse exactly when it matters. */
   bool telemetry = false;
-  std::atomic<int> armed{0};
-  std::atomic<int> min_armed{0};
-  std::atomic<long long> cb_max_us{0};
-  std::atomic<unsigned long long> resubmit_fail{0};
-  /* completions = URB callbacks; empties = those that left the ring with zero
-   * URBs posted. empties/completions is the robust host-starvation rate: under
-   * RF loss frames rarely arrive so the ring stays armed (empties ~0); under
-   * host starvation frames arrive faster than resubmit so the ring drains to
-   * empty (empties high) — and unlike the poll-loop rx.ring emit, this is
-   * counted in the callback, so it survives the pump-thread starvation that
-   * makes the periodic telemetry sparse exactly when it matters. */
-  std::atomic<unsigned long long> completions{0};
-  std::atomic<unsigned long long> empties{0};
+  RxRingCounters ring;
 
   /* reorder-pool mode (RxMode::ReorderPool): a free-list of spare RX buffers.
    * On completion the callback swaps a fresh buffer onto the wire and resubmits
@@ -100,10 +76,9 @@ inline void rx_consume(AsyncRxShared *s, const uint8_t *buf, int len) {
   if (s->telemetry) {
     const auto t0 = std::chrono::steady_clock::now();
     (*s->cb)(buf, len);
-    atomic_max(s->cb_max_us,
-               std::chrono::duration_cast<std::chrono::microseconds>(
-                   std::chrono::steady_clock::now() - t0)
-                   .count());
+    s->ring.on_consume_us(std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - t0)
+                              .count());
   } else {
     (*s->cb)(buf, len);
   }
@@ -112,13 +87,8 @@ inline void rx_consume(AsyncRxShared *s, const uint8_t *buf, int len) {
 extern "C" void LIBUSB_CALL devourer_rx_cb(libusb_transfer *t) {
   auto *s = static_cast<AsyncRxShared *>(t->user_data);
   /* This URB just completed — it has left the wire until resubmitted. */
-  if (s->telemetry) {
-    const int a = s->armed.fetch_sub(1, std::memory_order_relaxed) - 1;
-    atomic_min(s->min_armed, a);
-    s->completions.fetch_add(1, std::memory_order_relaxed);
-    if (a <= 0)
-      s->empties.fetch_add(1, std::memory_order_relaxed);
-  }
+  if (s->telemetry)
+    s->ring.on_complete();
   const bool resubmit = !(*s->stop)() &&
                         (t->status == LIBUSB_TRANSFER_COMPLETED ||
                          t->status == LIBUSB_TRANSFER_TIMED_OUT);
@@ -141,7 +111,7 @@ extern "C" void LIBUSB_CALL devourer_rx_cb(libusb_transfer *t) {
       t->length = s->buf_size;
       if (libusb_submit_transfer(t) == 0) {
         if (s->telemetry)
-          s->armed.fetch_add(1, std::memory_order_relaxed);
+          s->ring.on_armed();
         rx_consume(s, received, rlen);
         std::lock_guard<std::mutex> lk(s->pool_mu);
         s->free_bufs.push_back(received);
@@ -154,18 +124,18 @@ extern "C" void LIBUSB_CALL devourer_rx_cb(libusb_transfer *t) {
       }
       t->buffer = received;
       if (s->telemetry)
-        s->resubmit_fail.fetch_add(1, std::memory_order_relaxed);
+        s->ring.on_resubmit_fail();
     }
     /* Pool exhausted (consumer hopelessly behind), submit failed, or teardown:
      * degrade to the inline consume-then-resubmit-same behaviour. */
     rx_consume(s, received, rlen);
     if (resubmit && libusb_submit_transfer(t) == 0) {
       if (s->telemetry)
-        s->armed.fetch_add(1, std::memory_order_relaxed);
+        s->ring.on_armed();
       return;
     }
     if (resubmit && s->telemetry)
-      s->resubmit_fail.fetch_add(1, std::memory_order_relaxed);
+      s->ring.on_resubmit_fail();
     s->active--;
     return;
   }
@@ -188,7 +158,7 @@ extern "C" void LIBUSB_CALL devourer_rx_cb(libusb_transfer *t) {
       t->length = s->buf_size;
       if (libusb_submit_transfer(t) == 0) {
         if (s->telemetry)
-          s->armed.fetch_add(1, std::memory_order_relaxed);
+          s->ring.on_armed();
         if (rlen > 0) {
           std::lock_guard<std::mutex> lk(s->queue_mu);
           s->queue.emplace_back(received, rlen);
@@ -205,7 +175,7 @@ extern "C" void LIBUSB_CALL devourer_rx_cb(libusb_transfer *t) {
       }
       t->buffer = received;
       if (s->telemetry)
-        s->resubmit_fail.fetch_add(1, std::memory_order_relaxed);
+        s->ring.on_resubmit_fail();
     }
     /* Pool exhausted (consumer hopelessly behind under sustained overload) or
      * submit failed: preserve the pump's never-block invariant by re-arming
@@ -213,11 +183,11 @@ extern "C" void LIBUSB_CALL devourer_rx_cb(libusb_transfer *t) {
      * cascade an inline consume would trigger. */
     if (resubmit && libusb_submit_transfer(t) == 0) {
       if (s->telemetry)
-        s->armed.fetch_add(1, std::memory_order_relaxed);
+        s->ring.on_armed();
       return;
     }
     if (resubmit && s->telemetry)
-      s->resubmit_fail.fetch_add(1, std::memory_order_relaxed);
+      s->ring.on_resubmit_fail();
     s->active--;
     return;
   }
@@ -226,11 +196,11 @@ extern "C" void LIBUSB_CALL devourer_rx_cb(libusb_transfer *t) {
   rx_consume(s, t->buffer, rlen);
   if (resubmit && libusb_submit_transfer(t) == 0) {
     if (s->telemetry)
-      s->armed.fetch_add(1, std::memory_order_relaxed); /* back on the wire */
+      s->ring.on_armed(); /* back on the wire */
     return;
   }
   if (resubmit && s->telemetry)
-    s->resubmit_fail.fetch_add(1, std::memory_order_relaxed);
+    s->ring.on_resubmit_fail();
   s->active--; /* not resubmitted -> this URB is done */
 }
 } // namespace
@@ -239,10 +209,11 @@ UsbTransport::UsbTransport(libusb_device_handle *dev_handle, Logger_t logger,
                            libusb_context *ctx,
                            std::shared_ptr<devourer::UsbDeviceLock> usb_lock,
                            bool rx_zerocopy, RxMode rx_mode, int pool_spare,
-                           int ring_ms)
+                           int ring_ms, RxRingCallback on_ring)
     : _dev_handle{dev_handle}, _ctx{ctx}, _logger{std::move(logger)},
       _rx_zerocopy{rx_zerocopy}, _rx_mode{rx_mode}, _pool_spare{pool_spare},
-      _ring_ms{ring_ms}, _usb_lock{std::move(usb_lock)} {
+      _ring_ms{ring_ms}, _on_ring{std::move(on_ring)},
+      _usb_lock{std::move(usb_lock)} {
   libusb_device_descriptor desc{};
   if (libusb_get_device_descriptor(libusb_get_device(_dev_handle), &desc) ==
       LIBUSB_SUCCESS) {
@@ -389,12 +360,10 @@ void UsbTransport::rx_loop(
   if (sh.telemetry) {
     /* Seed both the live depth and its low-water mark to the just-submitted URB
      * count. min_armed{0} would otherwise pin the first window's low-water at 0
-     * (atomic_min only lowers), reporting a starvation that never happened; the
+     * (the low-water mark only lowers), reporting a starvation that never happened; the
      * store also wipes any transient recorded by a callback that fired between
      * URB submission above and this seed. */
-    const int a0 = sh.active.load(std::memory_order_relaxed);
-    sh.armed.store(a0, std::memory_order_relaxed);
-    sh.min_armed.store(a0, std::memory_order_relaxed);
+    sh.ring.reset(sh.active.load(std::memory_order_relaxed));
   }
   auto last_ring = std::chrono::steady_clock::now();
   while (!should_stop() && sh.active > 0) {
@@ -405,7 +374,6 @@ void UsbTransport::rx_loop(
       if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ring)
               .count() >= _ring_ms) {
         last_ring = now;
-        const int a = sh.armed.load(std::memory_order_relaxed);
         long long pool_free = -1; /* -1 = no host-side pool (plain async) */
         long long qdepth = 0;
         if (reorder || spsc) {
@@ -416,23 +384,23 @@ void UsbTransport::rx_loop(
           std::lock_guard<std::mutex> lk(sh.queue_mu);
           qdepth = static_cast<long long>(sh.queue.size());
         }
+        const RxRingStats st = sh.ring.snapshot(
+            spsc ? "spsc-fat" : reorder ? "reorder-pool" : "async", n_urbs,
+            pool_free, qdepth);
         Ev(_logger->events(), "rx.ring")
             .t()
-            .f("mode",
-               spsc ? "spsc-fat" : reorder ? "reorder-pool" : "async")
-            .f("n_urbs", n_urbs)
-            .f("armed", a)
-            .f("min_armed", sh.min_armed.exchange(a, std::memory_order_relaxed))
-            .f("cb_max_us",
-               sh.cb_max_us.exchange(0, std::memory_order_relaxed))
-            .f("resubmit_fail", (unsigned long long)sh.resubmit_fail.load(
-                                    std::memory_order_relaxed))
-            .f("completions", (unsigned long long)sh.completions.load(
-                                  std::memory_order_relaxed))
-            .f("empties", (unsigned long long)sh.empties.load(
-                              std::memory_order_relaxed))
-            .f("pool_free", pool_free)
-            .f("qdepth", qdepth);
+            .f("mode", st.mode)
+            .f("n_urbs", st.n_urbs)
+            .f("armed", st.armed)
+            .f("min_armed", st.min_armed)
+            .f("cb_max_us", st.cb_max_us)
+            .f("resubmit_fail", st.resubmit_fail)
+            .f("completions", st.completions)
+            .f("empties", st.empties)
+            .f("pool_free", st.pool_free)
+            .f("qdepth", st.qdepth);
+        if (_on_ring)
+          _on_ring(st);
       }
     }
   }
@@ -516,6 +484,13 @@ void UsbTransport::rx_loop_sync(
             .f("cb_max_us", cb_max_us)
             .f("resubmit_fail", (unsigned long long)0)
             .f("pool_free", -1);
+        if (_on_ring) {
+          RxRingStats st;
+          st.mode = "sync";
+          st.n_urbs = 1;
+          st.cb_max_us = cb_max_us;
+          _on_ring(st);
+        }
         cb_max_us = 0;
       }
     }

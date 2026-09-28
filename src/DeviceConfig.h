@@ -18,6 +18,7 @@
 #include <string_view>
 
 #include "AmpduMode.h"
+#include "RxRingStats.h"
 
 namespace devourer {
 
@@ -130,6 +131,12 @@ struct DeviceConfig {
      * failures, max inline-consume latency). Unset/0 = no telemetry (the
      * default RX path is then byte-for-byte unchanged). */
     std::optional<int> ring_ms;
+    /* no env (programmatic only) — consumer of the ring telemetry: called on
+     * the RX pump thread once per ring_ms window with the same snapshot the
+     * rx.ring event carries (RxRingStats.h). Lets an embedder that has no
+     * event stdout (an Android app) read the host-starvation counters. Needs
+     * ring_ms > 0; keep it short (store, don't block). */
+    RxRingCallback on_ring;
     /* env: DEVOURER_8821C_NO_PHYST (inverted) — 8821C: prepend the 32-byte
      * PHY-status to RX frames (per-frame RSSI/SNR/EVM). Disable only for the
      * leanest possible RX path. */
