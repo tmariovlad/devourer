@@ -181,6 +181,8 @@ extern "C" void LIBUSB_CALL devourer_rx_cb(libusb_transfer *t) {
      * submit failed: preserve the pump's never-block invariant by re-arming
      * with the received buffer and DROPPING this frame — a bounded loss, vs the
      * cascade an inline consume would trigger. */
+    if (rlen > 0 && s->telemetry)
+      s->ring.on_dropped();
     if (resubmit && libusb_submit_transfer(t) == 0) {
       if (s->telemetry)
         s->ring.on_armed();
@@ -397,6 +399,7 @@ void UsbTransport::rx_loop(
             .f("resubmit_fail", st.resubmit_fail)
             .f("completions", st.completions)
             .f("empties", st.empties)
+            .f("dropped", st.dropped)
             .f("pool_free", st.pool_free)
             .f("qdepth", st.qdepth);
         if (_on_ring)

@@ -63,6 +63,14 @@ int main() {
   check("pool_free passed through", s.pool_free, 3);
   check("qdepth passed through", s.qdepth, 2);
 
+  /* Frames the host discarded (spsc pool exhausted): cumulative, the only host-side SW drop the ring can see. */
+  c.on_dropped();
+  c.on_dropped();
+  s = c.snapshot("spsc-fat", 8, 0, 5);
+  check("dropped", (long long)s.dropped, 2);
+  s = c.snapshot("spsc-fat", 8, 0, 5);
+  check("dropped cumulative", (long long)s.dropped, 2);
+
   /* A later window only sees its own worst consume. */
   c.on_consume_us(50);
   s = c.snapshot("spsc-fat", 8, 3, 0);

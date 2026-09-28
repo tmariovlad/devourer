@@ -12,7 +12,9 @@ namespace devourer {
  * inline consumer delays resubmit); `min_armed` = its low-water mark in the window; `cb_max_us` = the worst inline
  * consume in the window. `completions` / `empties` / `resubmit_fail` are cumulative: empties = completions that left
  * zero URBs posted, so empties/completions is the host-starvation rate (RF loss leaves the ring armed, host
- * starvation drains it). `pool_free` = spare buffers in the host pool (-1 = plain async, no pool); `qdepth` = spsc
+ * starvation drains it). `dropped` (cumulative) = received buffers the host discarded because the spsc pool was
+ * exhausted: the one host-side SW drop the ring can see (0 in async/reorder modes, which consume inline instead).
+ * `pool_free` = spare buffers in the host pool (-1 = plain async, no pool); `qdepth` = spsc
  * consumer backlog. */
 struct RxRingStats {
   const char *mode = "async";
@@ -23,6 +25,7 @@ struct RxRingStats {
   unsigned long long resubmit_fail = 0;
   unsigned long long completions = 0;
   unsigned long long empties = 0;
+  unsigned long long dropped = 0;
   long long pool_free = -1;
   long long qdepth = 0;
 };
@@ -53,6 +56,9 @@ public:
   /* A resubmit that was wanted failed. */
   void on_resubmit_fail() { _resubmit_fail.fetch_add(1, std::memory_order_relaxed); }
 
+  /* A received buffer was discarded host-side (spsc pool exhausted). */
+  void on_dropped() { _dropped.fetch_add(1, std::memory_order_relaxed); }
+
   /* One inline consume took `us` microseconds. */
   void on_consume_us(long long us) {
     long long cur = _cb_max_us.load(std::memory_order_relaxed);
@@ -71,6 +77,7 @@ public:
     s.resubmit_fail = _resubmit_fail.load(std::memory_order_relaxed);
     s.completions = _completions.load(std::memory_order_relaxed);
     s.empties = _empties.load(std::memory_order_relaxed);
+    s.dropped = _dropped.load(std::memory_order_relaxed);
     s.pool_free = pool_free;
     s.qdepth = qdepth;
     return s;
@@ -89,6 +96,7 @@ private:
   std::atomic<unsigned long long> _resubmit_fail{0};
   std::atomic<unsigned long long> _completions{0};
   std::atomic<unsigned long long> _empties{0};
+  std::atomic<unsigned long long> _dropped{0};
 };
 
 } // namespace devourer
