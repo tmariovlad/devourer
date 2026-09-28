@@ -764,6 +764,14 @@ target_include_directories(NoiseFloorMathSelftest PRIVATE
 
 add_test(NAME noise_floor_math COMMAND NoiseFloorMathSelftest)
 
+# Headless guard for the primary -> RF center channel map and the 40 MHz primary offset / TX DATA_SC
+# (src/ChannelCenter.h): the whole 5 GHz table for 20/40/80 and 2.4 GHz 40 MHz by offset. Pure math, header-only.
+add_executable(ChannelCenterSelftest tests/channel_center_selftest.cpp)
+target_include_directories(ChannelCenterSelftest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+add_test(NAME channel_center COMMAND ChannelCenterSelftest)
+
 # Headless round-trip guard for the 802.11ax HE TX radiotap path
 # (src/RadiotapBuilder.cpp build_he + the shared Radiotap.c field-23 size entry
 # + src/ieee80211_radiotap.h HE masks): parse an HE spec -> build -> iterate ->

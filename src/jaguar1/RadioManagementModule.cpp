@@ -1,4 +1,5 @@
 #include "RadioManagementModule.h"
+#include "ChannelCenter.h"
 #include "Hal8812PhyReg.h"
 #include "Hal8812a_TxPwrTrack.h" /* kTxScalingTableJaguar — fast swing lever */
 #include "InitTimer.h"
@@ -15,38 +16,6 @@ extern "C" {
 #include <unordered_map>
 #include <vector>
 
-namespace {
-
-int get_40mhz_center_channel(int channel) {
-    static const std::unordered_map<int, int> channel_map = {
-        // 2.4GHz 40MHz configuration: only one valid center channel (6)
-        {4, 6},  // primary below center (extension above)
-        {8, 6},  // primary above center (extension below)
-
-        // 5GHz UNII-1
-        {36, 38}, {40, 38},
-        // 5GHz UNII-1 / UNII-2
-        {44, 46}, {48, 46},
-        // 5GHz UNII-2A
-        {52, 54}, {56, 54}, {60, 62}, {64, 62},
-        // 5GHz UNII-2C
-        {100, 102}, {104, 102},
-        {108, 110}, {112, 110},
-        {116, 118}, {120, 118},
-        {124, 126}, {128, 126},
-        // 5GHz UNII-2E (if applicable)
-        {132, 134}, {136, 134},
-        {140, 142}, {144, 142},
-        // 5GHz UNII-3
-        {149, 151}, {153, 155},
-        {157, 159}, {161, 163}
-    };
-
-    auto it = channel_map.find(channel);
-    return (it != channel_map.end()) ? it->second : channel;
-}
-
-}
 
 RadioManagementModule::RadioManagementModule(
     RtlAdapter device, std::shared_ptr<EepromManager> eepromManager,
@@ -213,45 +182,18 @@ void RadioManagementModule::hw_var_set_monitor() {
   _device.rtw_write16(REG_RXFLTMAP2, value_rxfltmap2);
 }
 
+static_assert(devourer::kPrimeDontCare == HAL_PRIME_CHNL_OFFSET_DONT_CARE &&
+                  devourer::kPrimeLower == HAL_PRIME_CHNL_OFFSET_LOWER &&
+                  devourer::kPrimeUpper == HAL_PRIME_CHNL_OFFSET_UPPER,
+              "ChannelCenter.h offsets must match the HAL values");
+
+/* Primary channel -> RF center channel: the one table in ChannelCenter.h (headless guard:
+ * tests/channel_center_selftest.cpp). */
 static uint8_t rtw_get_center_ch(uint8_t channel, ChannelWidth_t chnl_bw,
                                  uint8_t chnl_offset) {
-  uint8_t center_ch = channel;
-
-  if (chnl_bw == ChannelWidth_t::CHANNEL_WIDTH_80) {
-    if (channel == 36 || channel == 40 || channel == 44 || channel == 48)
-      center_ch = 42;
-    else if (channel == 52 || channel == 56 || channel == 60 || channel == 64)
-      center_ch = 58;
-    else if (channel == 100 || channel == 104 || channel == 108 ||
-             channel == 112)
-      center_ch = 106;
-    else if (channel == 116 || channel == 120 || channel == 124 ||
-             channel == 128)
-      center_ch = 122;
-    else if (channel == 132 || channel == 136 || channel == 140 ||
-             channel == 144)
-      center_ch = 138;
-    else if (channel == 149 || channel == 153 || channel == 157 ||
-             channel == 161)
-      center_ch = 155;
-    else if (channel == 165 || channel == 169 || channel == 173 ||
-             channel == 177)
-      center_ch = 171;
-    else if (channel <= 14)
-      center_ch = 7;
-  } else if (chnl_bw == ChannelWidth_t::CHANNEL_WIDTH_40) {
-      center_ch = get_40mhz_center_channel(center_ch);
-  } else if (chnl_bw == ChannelWidth_t::CHANNEL_WIDTH_20 ||
-             chnl_bw == ChannelWidth_t::CHANNEL_WIDTH_5 ||
-             chnl_bw == ChannelWidth_t::CHANNEL_WIDTH_10) {
-    /* 5/10 MHz narrowband (SPIKE, 8812A): a 20 MHz-based baseband re-clock —
-     * the RF stays a 20 MHz tune, center == primary. */
-    center_ch = channel;
-  } else {
-    throw std::logic_error("not yet implemented");
-  }
-
-  return center_ch;
+  const int center = devourer::center_channel(channel, chnl_bw, chnl_offset);
+  if (center < 0) throw std::logic_error("not yet implemented");
+  return static_cast<uint8_t>(center);
 }
 
 void RadioManagementModule::set_channel_bwmode(uint8_t channel,
