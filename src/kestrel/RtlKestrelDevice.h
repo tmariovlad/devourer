@@ -1,6 +1,7 @@
 #ifndef RTL_KESTREL_DEVICE_H
 #define RTL_KESTREL_DEVICE_H
 
+#include "RxStop.h"
 #include <atomic>
 #include <cstdint>
 #include <optional>
@@ -58,14 +59,14 @@ public:
             SelectedChannel channel) override;
   void InitWrite(SelectedChannel channel) override;
   void StartRxLoop(Action_ParsedRadioPacket packetProcessor) override;
-  void StopRxLoop() override { _rx_stop = true; }
+  void StopRxLoop() override { _rx_stop.request(); }
   /* Join the WP-release drain thread (started by InitWrite) before the caller
    * tears libusb down — a thread still inside libusb_handle_events when
    * libusb_exit runs trips libusb's usbi_mutex_destroy assertion (SIGABRT at
    * demo shutdown). The destructor joins too, but the demos destroy the
    * device object after libusb_exit, so Stop() is the ordered join point. */
   void Stop() override {
-    _rx_stop = true;
+    _rx_stop.request();
     stop_wp_drain();
   }
   void SetMonitorChannel(SelectedChannel channel) override;
@@ -210,7 +211,9 @@ private:
   kestrel::HalKestrel _hal;
   SelectedChannel _channel{};
   kestrel::EfuseInfo _efuse{};
-  volatile bool _rx_stop = false;
+  /* StartRxLoop's stop request (StopRxLoop): a stop before or during the loop
+   * ends it, the exit consumes it (RxStop.h). */
+  devourer::RxStopLatch _rx_stop;
   /* WP-release drain (Kestrel STF USB): the fw returns each transmitted frame's
    * WD/PLE pages as an RX packet (rpkt_type=7, TX_PD_RELEASE_HOST) on the bulk-
    * IN. A TX-only path must still drain the bulk-IN or the pages never recycle

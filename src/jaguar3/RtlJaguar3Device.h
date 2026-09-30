@@ -1,6 +1,7 @@
 #ifndef RTL_JAGUAR3_DEVICE_H
 #define RTL_JAGUAR3_DEVICE_H
 
+#include "RxStop.h"
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -49,7 +50,7 @@ public:
    * Takes over the bulk-IN endpoint from the coex thread's C2H drain for as
    * long as it runs. */
   void StartRxLoop(Action_ParsedRadioPacket packetProcessor) override;
-  void StopRxLoop() override { _rx_stop = true; }
+  void StopRxLoop() override { _rx_stop.request(); }
   void SetMonitorChannel(SelectedChannel channel) override;
   /* Lean frequency-hop retune (Jaguar3 port of the Jaguar1 FastRetune — see
    * docs/frequency-hopping.md): the RF18 channel write inside its 3-wire
@@ -377,8 +378,9 @@ private:
    * steer moves the grid by its applied shift without moving the TSF, so the
    * coarse path's TBTT phase-alignment must subtract it. Guarded by _reg_mu. */
   int64_t _tbtt_off_us = 0;
-  /* StartRxLoop stop request (StopRxLoop). */
-  volatile bool _rx_stop = false;
+  /* StartRxLoop's stop request (StopRxLoop): a stop before or during the loop
+   * ends it, the exit consumes it (RxStop.h). */
+  devourer::RxStopLatch _rx_stop;
   /* True while StartRxLoop owns bulk-IN (gates the coex thread's drain). */
   std::atomic<bool> _rx_loop_active{false};
   /* Set when InitWrite zeroes the RX filters (0x6A0-0x6A4) for TX-only

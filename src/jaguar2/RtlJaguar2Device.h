@@ -1,6 +1,7 @@
 #ifndef RTL_JAGUAR2_DEVICE_H
 #define RTL_JAGUAR2_DEVICE_H
 
+#include "RxStop.h"
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -52,7 +53,7 @@ public:
    * runs this on its own std::thread next to the TX loop. Starts (and on exit
    * stops) the DIG thread — TX-only sessions stay DIG-free. */
   void StartRxLoop(Action_ParsedRadioPacket packetProcessor) override;
-  void StopRxLoop() override { _rx_stop = true; }
+  void StopRxLoop() override { _rx_stop.request(); }
   void SetMonitorChannel(SelectedChannel channel) override;
   /* Lean frequency-hop retune (the Jaguar2 port of the Jaguar1 FastRetune —
    * see docs/frequency-hopping.md): composed cached writes for RF18 + the
@@ -323,9 +324,9 @@ private:
    * after a TBTT re-latch). Caller holds _reg_mu. */
   bool redownload_beacon_locked();
 
-  /* StartRxLoop stop request (StopRxLoop). volatile (not atomic) to match the
-   * signal-flag pattern used across the library (g_devourer_should_stop). */
-  volatile bool _rx_stop = false;
+  /* StartRxLoop's stop request (StopRxLoop): a stop before or during the loop
+   * ends it, the exit consumes it (RxStop.h). */
+  devourer::RxStopLatch _rx_stop;
 
   /* Shared cold bring-up (power-on -> DLFW -> MAC/BB/RF -> channel -> LCK ->
    * IQK -> coex -> enable RX/TX engine). Used by both Init (RX) and InitWrite

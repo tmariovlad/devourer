@@ -81,7 +81,7 @@ RtlKestrelDevice::~RtlKestrelDevice() {
    * belongs to every device: nothing gets released while a transfer the
    * transport still owns is outstanding. */
   _device.quiesce_tx();
-  _rx_stop = true;
+  _rx_stop.request();
   stop_wp_drain();
 }
 
@@ -274,7 +274,6 @@ void RtlKestrelDevice::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
   /* Take the bulk-IN over from the TX WP-release drain (this loop also consumes
    * rpkt_type=7 releases) so the two never read the endpoint concurrently. */
   stop_wp_drain();
-  _rx_stop = false;
   _logger->info("Kestrel: starting RX loop on ch{}", _channel.Channel);
   /* Async bulk-IN ring; walk each aggregate with the 11ax rxd parser. The
    * buffer must hold a full RXAGG aggregate (the 8852C LEN_TH is ~20 KB), or
@@ -284,6 +283,7 @@ void RtlKestrelDevice::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
    * divergence between the dies. */
   const uint16_t drv_info_unit =
       _variant == kestrel::ChipVariant::C8852C ? 16 : 8;
+  _rx_stop.run([&](const std::function<bool()> &stop) {
   _device.bulk_read_async_loop(
       32768, 8,
       [&, drv_info_unit](const uint8_t *data, int n) {
@@ -342,10 +342,10 @@ void RtlKestrelDevice::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
           off += f.next_offset;
         }
       },
-      /* Stop on StopRxLoop() or the demos' SIGINT/SIGTERM flag — the same
-       * signal-flag pattern every generation's RX loop honours (without it the
-       * harness's `timeout` SIGTERM never unblocks the loop). */
-      [this]() -> bool { return _rx_stop || g_devourer_should_stop; });
+      /* Stop on StopRxLoop() or the demos' SIGINT/SIGTERM flag (RxStop.h:
+       * without it the harness's `timeout` SIGTERM never unblocks the loop). */
+      stop);
+  });
 }
 
 void RtlKestrelDevice::SetMonitorChannel(SelectedChannel channel) {

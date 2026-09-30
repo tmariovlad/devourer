@@ -1,6 +1,7 @@
 #ifndef RTL_JAGUAR_DEVICE_H
 #define RTL_JAGUAR_DEVICE_H
 
+#include "RxStop.h"
 #include <array>
 #include <atomic>
 #include <functional>
@@ -94,7 +95,7 @@ public:
    * Init = bring-up + BFEE arm + StartRxLoop; a TX+RX caller does InitWrite
    * once, then runs this on its own std::thread next to the TX loop. */
   void StartRxLoop(Action_ParsedRadioPacket packetProcessor) override;
-  void StopRxLoop() override { should_stop = true; }
+  void StopRxLoop() override { _rx_stop.request(); }
   /* Jaguar1's send path is the only asynchronous one in the tree, so its
    * Stop() is TX quiesce and nothing else: cancel and reap the outstanding
    * bulk-OUT URBs while the caller's libusb context is still up. Deliberately
@@ -313,7 +314,9 @@ public:
   int8_t _abs_noise_floor = 0;
   bool _abs_nf_valid = false;
 
-  bool should_stop = false;
+  /* StartRxLoop's stop request (StopRxLoop): a stop before or during the loop
+   * ends it, the exit consumes it (RxStop.h). */
+  devourer::RxStopLatch _rx_stop;
 
   /* Per-queue free-page snapshot read from REG_FIFOPAGE_INFO_1..5
    * (0x0230 / 0x0234 / 0x0238 / 0x023C / 0x0240). 8814A-only — these

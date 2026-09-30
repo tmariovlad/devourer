@@ -475,8 +475,6 @@ void RtlJaguar2Device::Init(Action_ParsedRadioPacket packetProcessor,
 
 void RtlJaguar2Device::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
   _packetProcessor = std::move(packetProcessor);
-  /* Restartable: clear any stop request left by a prior StopRxLoop(). */
-  _rx_stop = false;
   /* Start the DIG thread: track IGI to the false-alarm rate so weak signals are
    * caught without an FA storm (a fixed IGI can't span the range). */
   _dig_stop = false;
@@ -606,8 +604,8 @@ void RtlJaguar2Device::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
   int rx_urb_bytes = _cfg.rx.urb_bytes.value_or(16 * 1024);
   if (rx_urb_bytes < 4096)
     rx_urb_bytes = 4096;
-  _device.bulk_read_async_loop(rx_urb_bytes, 8, on_data, [this]() -> bool {
-    return _rx_stop || g_devourer_should_stop;
+  _rx_stop.run([&](const std::function<bool()> &stop) {
+    _device.bulk_read_async_loop(rx_urb_bytes, 8, on_data, stop);
   });
   stop_dig();
   _logger->info("RtlJaguar2Device: RX loop exited ({} frames, {} reads)", frames,

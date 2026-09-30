@@ -55,14 +55,17 @@ public:
   /* Blocking RX worker loop. Assumes the chip is already brought up (a prior
    * Init or InitWrite on this device) — performs NO bring-up, channel set, or
    * beamforming arming. Runs on the CALLER's thread and returns once
-   * StopRxLoop() is called or the global stop flag is set; it is restartable
-   * after it returns. This is the piece that lets one process bring up once
+   * StopRxLoop() is called or the global stop flag is set. A StopRxLoop()
+   * made BEFORE the loop starts also ends it (at once): each exit consumes the
+   * request, so the device is restartable after it returns, and a stop racing
+   * the start is never lost (RxStop.h). This is the piece that lets one process bring up once
    * (InitWrite) and then run TX and RX concurrently on the same claimed handle
    * — Init is the RX-only convenience wrapper (bring-up + StartRxLoop). */
   virtual void StartRxLoop(Action_ParsedRadioPacket packetProcessor) = 0;
 
-  /* Ask a running StartRxLoop to exit (sets a flag; the caller then joins
-   * whatever thread runs StartRxLoop). Default no-op. */
+  /* Ask StartRxLoop to exit: the running one, or the next one if none runs yet
+   * (sets a flag; the caller then joins whatever thread runs StartRxLoop).
+   * Default no-op. */
   virtual void StopRxLoop() {}
   virtual void SetMonitorChannel(SelectedChannel channel) = 0;
 

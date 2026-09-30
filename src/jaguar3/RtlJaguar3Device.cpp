@@ -150,8 +150,6 @@ void RtlJaguar3Device::Init(Action_ParsedRadioPacket packetProcessor,
 
 void RtlJaguar3Device::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
   _packetProcessor = std::move(packetProcessor);
-  /* Restartable: clear any stop request left by a prior StopRxLoop(). */
-  _rx_stop = false;
   /* Take over bulk-IN from the coex thread's C2H drain up front — also during
    * the register restore below, so its 200 ms bulk reads don't interleave with
    * the RX-path enable sequence. */
@@ -364,8 +362,8 @@ void RtlJaguar3Device::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
   int rx_urb_bytes = _cfg.rx.urb_bytes.value_or(16 * 1024);
   if (rx_urb_bytes < 4096)
     rx_urb_bytes = 4096;
-  _device.bulk_read_async_loop(rx_urb_bytes, 8, on_data, [this]() -> bool {
-    return _rx_stop || g_devourer_should_stop;
+  _rx_stop.run([&](const std::function<bool()> &stop) {
+    _device.bulk_read_async_loop(rx_urb_bytes, 8, on_data, stop);
   });
   _rx_loop_active = false;
   phydm_stop = true;

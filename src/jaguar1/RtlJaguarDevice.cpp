@@ -1301,8 +1301,6 @@ void RtlJaguarDevice::Init(Action_ParsedRadioPacket packetProcessor,
 
 void RtlJaguarDevice::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
   _packetProcessor = std::move(packetProcessor);
-  /* Restartable: clear any stop request left by a prior StopRxLoop(). */
-  should_stop = false;
 
   /* DEVOURER_RX_PATHS=0xNN restricts which RX chains the chip enables/combines,
    * by masking the RX-path-enable register (0x808 byte 0: bits 0/4 = path A
@@ -1435,7 +1433,7 @@ void RtlJaguarDevice::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
     FrameParser fp{_logger};
     for (auto &p : fp.recvbuf2recvframe(
              std::span<uint8_t>{const_cast<uint8_t *>(data), (size_t)n})) {
-      if (should_stop || g_devourer_should_stop)
+      if (_rx_stop.requested())
         break;
       if (!p.RxAtrib.crc_err) {
         _rxq.add(p.RxAtrib.rssi[0], p.RxAtrib.snr[0], p.RxAtrib.evm[0]);
@@ -1458,8 +1456,8 @@ void RtlJaguarDevice::StartRxLoop(Action_ParsedRadioPacket packetProcessor) {
       _packetProcessor(p);
     }
   };
-  _device.bulk_read_async_loop(rx_urb_bytes, rx_urbs, on_data, [this]() -> bool {
-    return should_stop || g_devourer_should_stop;
+  _rx_stop.run([&](const std::function<bool()> &stop) {
+    _device.bulk_read_async_loop(rx_urb_bytes, rx_urbs, on_data, stop);
   });
 
   _rxmask_stop.store(true);
