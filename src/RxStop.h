@@ -38,11 +38,15 @@ public:
 
   /* One blocking loop: `loop(stop)` must return once stop() is true (it is
    * handed to bulk_read_async_loop as the stop predicate). The request is
-   * consumed after the loop returns, never on entry. */
+   * consumed when the loop ends, never on entry. That includes a throwing
+   * loop, so the next StartRxLoop on the device is not cut short. */
   template <class Loop> void run(Loop &&loop) {
+    struct ConsumeOnExit {
+      std::atomic<bool> &r;
+      ~ConsumeOnExit() { r.store(false, std::memory_order_release); }
+    } consume{requested_};
     std::function<bool()> stop = [this]() -> bool { return requested(); };
     loop(stop);
-    requested_.store(false, std::memory_order_release);
   }
 
 private:
